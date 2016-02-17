@@ -1,0 +1,241 @@
+#!/usr/bin/python
+
+import os
+import sqlite3
+import shutil
+import urllib
+import glob
+from collections import Counter
+from itertools import combinations
+import argparse
+
+def detect_mendeley_database():
+    search_path = os.path.expanduser('~/.local/share/data/Mendeley Ltd./Mendeley Desktop/') + '*@www.mendeley.com.sqlite'
+    database_proposals = glob.glob( search_path )
+    if len(database_proposals) == 0:
+        raise IOError, "Can't find any mendeley db"
+    elif len(database_proposals) > 1:
+        raise IOError, "Can't choose between: %s" % ' ; '.join(database_proposals)
+    else:
+        return database_proposals[0]
+
+def db_connect(database_path):
+    shutil.copy(database_path, '/tmp/ADJASODIJA_database_backup.sqlite')
+    con = sqlite3.connect('/tmp/ADJASODIJA_database_backup.sqlite')
+
+    print 'Temporary DB at /tmp/ADJASODIJA_database_backup.sqlite'
+    def do(query):
+        cur = con.cursor()
+        query = cur.execute(query)
+        colname = [ d[0] for d in query.description ]
+        result_list = [ dict(zip(colname, r)) for r in query.fetchall() ]
+        cur.close()
+        return result_list
+
+    return do
+
+def is_ascii(s):
+    return all(ord(c) < 128 for c in s)
+
+def uri2path(uri):
+    return urllib.url2pathname(uri)[7:]
+
+def copy(path, dst_dir, verbose=False):
+    if not os.path.exists(dst_dir):
+        os.makedirs(dst_dir)
+
+    try:
+        shutil.copy(path, dst_dir)
+        if verbose:
+            print 'copied', path, 'into', dst_dir
+    except IOError:
+        for i, c in enumerate(list(path)[::-1]):
+            if not is_ascii(c):
+                break
+
+        path_part = path[:-(i+10)]
+
+        valid_paths = glob.glob(path_part+'*')
+
+        if len(valid_paths) == 0:
+            print 'something weird happend, can\'t find file ', path_part
+        elif len(valid_paths) > 1:
+            print 'can\'t handle ambiguity in names of', path_part
+        else:
+            # everything is okay
+            path = valid_paths[0]
+            shutil.copy(path, dst_dir)
+            if verbose:
+                print 'copied', path, 'into', dst_dir
+
+def get(d, a, b, c):
+    """ get_d_from_a_filterby_b_equal_c """
+    return [x[d] for x in a if x[b] == c]
+
+def retlieve_documents_vs_folders(file_urls):
+    document_id_vs_folder_list = dict()
+
+    for id, _ in Counter([x['id'] for x in file_urls]).items():
+        document_id_vs_folder_list[id] = list(set(get('folder', file_urls, 'id', id)))
+
+    return document_id_vs_folder_list
+
+def build_subtree(id):
+    children_ids = get('id', folders, 'parentId', id)
+    if len(children_ids) == 0:
+        return {}
+    else:
+        return dict([
+            (child_subtree_id, build_subtree(child_subtree_id) )
+            for child_subtree_id in children_ids])
+
+def check_parenthood(tree, node_a, node_b):
+    """ checks if nodes a and b are 'parent-child' or 'child-parent' or 'independent' """
+    
+    state = [0] # we didn't find any of them yet
+
+    def recursive_subroutine(tree):
+        for tested_node in [node_a, node_b]:
+            if tested_node in tree.keys():
+                if state[0] == 0:
+                    state[0] += 1 # just found one of them
+                    ret = recursive_subroutine(tree[tested_node])
+                    if ret != None:
+                        return ret
+                    state[0] -= 1 # nope - it was 0, we set 1 and runed - nothing
+                    return 'independant'
+                elif state[0] == 1:
+                    return 'child-parent' if tested_node == node_a else 'parent-child'
+        
+        for child in tree:
+            ret = recursive_subroutine(tree[child])
+            if ret != None:
+                return ret
+
+    return recursive_subroutine(tree)
+
+# if we see 'parent -- child' in someones dir structure, we remove parent as artifact
+
+def build_clean_doc2folder(document_id_vs_folder_list):
+    new_document_id_vs_folder_list = {}
+
+    for document_id, folder_list in document_id_vs_folder_list.items():
+        not_finished = True
+        while not_finished:
+            for folder_id1, folder_id2 in combinations(folder_list, 2):
+                phood = check_parenthood(tree, folder_id1, folder_id2)
+                if phood != 'independant':
+                    remove_node = folder_id2 if phood == 'child-parent' else folder_id1
+                    new_list = list(set(folder_list) - set([remove_node]))
+                    folder_list = new_list
+                    break
+            else:
+                not_finished = False
+
+        new_document_id_vs_folder_list[document_id] = folder_list
+
+    return new_document_id_vs_folder_list
+
+def get_folder_path(folder_id):
+
+    def subroutine(trace, tree):
+        if folder_id in tree.keys():
+            return trace + [folder_id]
+        else:
+            for child_id in tree.keys():
+                ret = subroutine(trace + [child_id], tree[child_id])
+                if ret:
+                    return ret
+
+
+    return subroutine([], tree)
+
+def get_folder_name(id):
+    return [x['name'] for x in folders if x['id'] == id][0]
+
+def get_document_files(id):
+    return list(set([ uri2path(x['url']) for x in file_urls if x['id'] == id]))
+
+def build_copypaths(new_document_id_vs_folder_list, root_dir = './pdf'):
+    copypaths = []
+    for document_id, leaf_folder_ids in new_document_id_vs_folder_list.items():
+        paths = get_document_files(document_id)
+        dest_dirs = [ os.path.join( 
+                        root_dir, 
+                        *[get_folder_name(f) for f in get_folder_path(leaf_folder_id)] 
+                ) 
+                for leaf_folder_id in leaf_folder_ids ]
+
+        copypaths.append( (paths, dest_dirs) )
+
+    return copypaths
+
+def run_copypaths(copypaths, verbose=False):
+    for paths, dest_dirs in copypaths:
+        for path in paths:
+            for d in dest_dirs:
+                copy(path, d, verbose=False)
+
+def main():
+    parser = argparse.ArgumentParser(description='Exports Mendeley PDFs using Folder Structure')
+    parser.add_argument('OUTPUT_DIR', help='ouput dir')
+    parser.add_argument('-i', '--input', 
+        help='database file (dectected automaticaly if not specified)')
+    parser.add_argument('-s', '--simulate', action='store_true', 
+        help='Run Only Simulation (not copy anything, just show what would be copied where)')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    args = parser.parse_args()
+
+    root_dir = args.OUTPUT_DIR
+    verbose = args.verbose
+    db_file_path = args.input
+    simulate = args.simulate
+
+    if db_file_path == None:
+        db_file_path = detect_mendeley_database()
+        print 'Detected database:', db_file_path
+    
+    do = db_connect(db_file_path)
+
+    print 'Retrieving Data from DB and Building Paths'
+
+    global file_urls
+    file_urls = do('''SELECT 
+                    Documents.id               AS id, 
+                    Documents.title            AS title, 
+                    Files.localUrl             AS url,
+                    DocumentFolders.folderId   AS folder
+                FROM DocumentFiles
+                    JOIN Documents       ON DocumentFiles.documentId = Documents.id
+                    JOIN Files           ON DocumentFiles.hash = Files.hash
+                    JOIN DocumentFolders ON DocumentFiles.documentId = DocumentFolders.documentId
+    ''')
+
+    document_id_vs_folder_list = retlieve_documents_vs_folders(file_urls)
+
+    global folders
+    folders = do('''SELECT 
+                    id,
+                    name,
+                    parentId
+                FROM Folders
+    ''')
+
+    global tree
+    tree = build_subtree(-1)
+
+    new_document_id_vs_folder_list = build_clean_doc2folder(document_id_vs_folder_list)
+
+    print 'Building Copy Paths'
+    copypaths = build_copypaths(new_document_id_vs_folder_list, root_dir)
+
+    if simulate:
+        for paths, dest_dirs in copypaths:
+            for path in paths:
+                for d in dest_dirs:
+                    print path, '->', d
+    else:
+        run_copypaths(copypaths, verbose)
+
+if __name__ == '__main__':
+    main()
