@@ -164,7 +164,7 @@ def build_copypaths(new_document_id_vs_folder_list, root_dir = './pdf'):
                         root_dir, 
                         *[get_folder_name(f) for f in get_folder_path(leaf_folder_id)] 
                 ) 
-                for leaf_folder_id in leaf_folder_ids ]
+                for leaf_folder_id in leaf_folder_ids if get_folder_path(leaf_folder_id) is not None ]
 
         copypaths.append( (paths, dest_dirs) )
 
