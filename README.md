@@ -10,7 +10,5 @@ to simulate copying without actual copying to see what is going to be copied whe
 
     ./run -s ~/Dropbox/papers/
 
-**[bug]** for some reason ~5-10% of papers end up being located in wrong directories and 1-2% (with a lot of unicode in the title) are not copied at all.
-
-Dependencies: Python 2.7
+Dependencies: Python 3.4
 Tested on Ubuntu 14.04
