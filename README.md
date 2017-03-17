@@ -1,3 +1,5 @@
+**UPD**: does not seem to work with recent versions of mendeley :( 
+
 # Mendeley Folder PDF Export Tool
 
 This script searches for a Mendeley SQLite db file in your `~`, reads pdf locations and folder structure, and copies those pdfs into folders.
